@@ -1,44 +1,58 @@
 #include "mbed.h"
 #include "drivers/LCD_DISCO_F429ZI.h"
 
+// Constants for gyroscope setup
+#define GYRO_CONFIG_REG 0x20
+#define GYRO_ENABLE 0x0F
+#define OUT_X_L 0x28  // Register address for X-axis low byte
+#define OUT_Y_L 0x2A  // Register address for Y-axis low byte
+#define OUT_Z_L 0x2C  // Register address for Z-axis low byte
+#define SCALE_FACTOR 0.07 // Degrees per second per LSB
+
 #define SAMPLE_FREQ 100.0f // Sampling frequency in Hz
 #define SAMPLE_PERIOD_MS (1000.0f / SAMPLE_FREQ)
 
+// SPI pins and CS pin for the gyroscope
 SPI spi(PF_9, PF_8, PF_7); // MOSI, MISO, SCK
-DigitalOut cs(PC_1); // Chip select
+DigitalOut cs(PC_1);       // Chip select for the gyroscope
 LCD_DISCO_F429ZI lcd;
 
-void init_gyro() {
-    cs = 0;
-    spi.write(0x20 | 0x00); // CTRL_REG1
-    spi.write(0x0F); // Turn on the sensor, enable x, y, and z axis
-    cs = 1;
+// Buffer for SPI communication
+uint8_t tx_buffer[2];
+uint8_t rx_buffer[6];  // Increased buffer size for multiple axes
 
+// Initialize the gyroscope
+void initGyro() {
     cs = 0;
-    spi.write(0x23 | 0x00); // CTRL_REG4
-    spi.write(0x00); // Set scale (250 dps full scale)
+    tx_buffer[0] = GYRO_CONFIG_REG;
+    tx_buffer[1] = GYRO_ENABLE;
+    spi.write((const char*)tx_buffer, 2, (char*)rx_buffer, 2);  // Send configuration to the gyroscope, with correct type casting
     cs = 1;
 }
 
-void read_gyro(int16_t &x, int16_t &y, int16_t &z) {
-    char out[6];
+// Read angular rate from all three axes
+void readAngularRate(float& x, float& y, float& z) {
     cs = 0;
-    spi.write(0x28 | 0x80); // Read from OUT_X_L, MSB at high to read multiple bytes
-    for (int i = 0; i < 6; ++i) {
-        out[i] = spi.write(0x00); // Dummy write to read data
-    }
+    tx_buffer[0] = OUT_X_L | 0x80 | 0x40;  // Read multiple bytes starting from X low
+    spi.write((const char*)tx_buffer, 1, (char*)rx_buffer, 6); // Read 6 bytes for XYZ, with correct type casting
     cs = 1;
 
-    x = (out[1] << 8) | out[0];
-    y = (out[3] << 8) | out[2];
-    z = (out[5] << 8) | out[4];
+    // Combine high and low bytes for each axis
+    int16_t raw_x = (rx_buffer[1] << 8) | rx_buffer[0];
+    int16_t raw_y = (rx_buffer[3] << 8) | rx_buffer[2];
+    int16_t raw_z = (rx_buffer[5] << 8) | rx_buffer[4];
+
+    // Convert to degrees per second
+    x = raw_x * SCALE_FACTOR;
+    y = raw_y * SCALE_FACTOR;
+    z = raw_z * SCALE_FACTOR;
 }
 
 // this function is use to detect when the gyro data crosses zero (change in the direction of motion)
-int count_zero_crossings(int16_t* data, int size) {
+int count_zero_crossings(int16_t* data, int size, int16_t threshold) {
     int count = 0;
     for (int i = 1; i < size; i++) {
-        if ((data[i - 1] > 0 && data[i] < 0) || (data[i - 1] < 0 && data[i] > 0)) {
+        if ((data[i - 1] > threshold && data[i] < -threshold) || (data[i - 1] < -threshold && data[i] > threshold)) {
             count++;
         }
     }
@@ -46,27 +60,30 @@ int count_zero_crossings(int16_t* data, int size) {
 }
 
 int main() {
-    init_gyro();
-    spi.format(8, 3);
-    spi.frequency(1000000);
+    spi.format(8, 3); // 8 bits per frame, Mode 3
+    spi.frequency(1000000); // 1 MHz
 
-    const int windowSize = 100;
+    const int windowSize = 10;
     int16_t x_data[windowSize], y_data[windowSize], z_data[windowSize];
     int index = 0;
+    int treshhold = 100;     //treshhold used to count cross-zero
+
+    initGyro();
 
     while (true) {
-        int16_t raw_x, raw_y, raw_z;
-        read_gyro(raw_x, raw_y, raw_z);
+        float x_dps, y_dps, z_dps;
+        readAngularRate(x_dps, y_dps, z_dps);
+        printf("Rates -> X: %.2f dps, Y: %.2f dps, Z: %.2f dps\n", x_dps, y_dps, z_dps);
 
-        x_data[index] = raw_x;
-        y_data[index] = raw_y;
-        z_data[index] = raw_z;
+        x_data[index] = x_dps;
+        y_data[index] = y_dps;
+        z_data[index] = z_dps;
         index++;
 
         if (index >= windowSize) {
-            int x_crossings = count_zero_crossings(x_data, windowSize);
-            int y_crossings = count_zero_crossings(y_data, windowSize);
-            int z_crossings = count_zero_crossings(z_data, windowSize);
+            int x_crossings = count_zero_crossings(x_data, windowSize, treshhold);
+            int y_crossings = count_zero_crossings(y_data, windowSize, treshhold);
+            int z_crossings = count_zero_crossings(z_data, windowSize, treshhold);
 
             float x_freq = (x_crossings / 2.0) / (windowSize * SAMPLE_PERIOD_MS / 1000.0);
             float y_freq = (y_crossings / 2.0) / (windowSize * SAMPLE_PERIOD_MS / 1000.0);
