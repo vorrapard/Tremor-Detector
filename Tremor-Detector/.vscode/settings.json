@@ -2,5 +2,12 @@
     "stm32-for-vscode.openOCDPath": false,
     "stm32-for-vscode.makePath": false,
     "stm32-for-vscode.armToolchainPath": false,
-    "cmake.configureOnOpen": false
+    "cmake.configureOnOpen": false,
+    "files.associations": {
+        "mstd_atomic": "cpp",
+        "mstd_iterator": "cpp",
+        "array": "cpp",
+        "string": "cpp",
+        "string_view": "cpp"
+    }
 }
